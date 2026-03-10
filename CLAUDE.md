@@ -20,6 +20,7 @@
 - [x] 本地开发端口统一改为 `18080`（后端/前端/测试脚本）
 - [x] 新增一键启动脚本（`start_backend.ps1`，启动前自动清理端口占用）
 - [x] 新增强制停止脚本（`stop_backend.ps1`，用于 Ctrl+C 失效场景）
+- [x] **Git 仓库初始化并推送到 GitHub**（`https://github.com/wangweishi2018431/mathhomework`）
 
 ### 核心接口
 
