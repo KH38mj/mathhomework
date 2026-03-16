@@ -16,8 +16,8 @@ App({
   },
 
   globalData: {
-    // 本地开发后端地址
-    apiBaseUrl: 'http://127.0.0.1:18080',
+    // 云托管生产环境
+    apiBaseUrl: 'https://math-api-234234-9-1324601200.sh.run.tcloudbase.com',
     studentProfile: null,
   }
 })
