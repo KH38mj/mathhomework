@@ -23,7 +23,7 @@ App({
   },
 
   globalData: {
-    apiBaseUrl: 'https://math-api-234234-9-1324601200.sh.run.tcloudbase.com',
+    apiBaseUrl: 'https://mathhomework.top',
     studentProfile: null,
     studentSession: null,
   }
