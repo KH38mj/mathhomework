@@ -1,22 +1,19 @@
 <view class="container">
   <view class="hero">
     <text class="hero-title">管理后台</text>
-    <text class="hero-sub">配置管理与系统监控</text>
+    <text class="hero-sub">配置管理与系统检查</text>
   </view>
 
-  <!-- 登录界面 -->
   <view class="card login-card" wx:if="{{!isLoggedIn}}">
     <text class="card-title">管理员登录</text>
-    <text class="hint">默认密码: admin123</text>
+    <text class="hint">请使用服务端配置好的管理员密码登录</text>
     <input class="input" type="password" placeholder="请输入管理员密码" value="{{password}}" bindinput="onPasswordInput" />
     <button class="primary-btn" bindtap="login">登录</button>
   </view>
 
-  <!-- 管理界面 -->
   <view wx:if="{{isLoggedIn}}">
-    <!-- 当前配置状态 -->
     <view class="card status-card">
-      <text class="card-title">系统状态</text>
+      <text class="card-title">当前状态</text>
       <view class="status-item {{aiStatus.vision ? 'ok' : 'warn'}}">
         <text class="status-icon">{{aiStatus.vision ? '✓' : '!'}}</text>
         <view class="status-info">
@@ -32,25 +29,24 @@
         </view>
       </view>
       <view class="status-item {{aiStatus.solve ? 'ok' : 'normal'}}">
-        <text class="status-icon">{{aiStatus.solve ? '✓' : '○'}}</text>
+        <text class="status-icon">{{aiStatus.solve ? '✓' : '·'}}</text>
         <view class="status-info">
           <text class="status-label">题目求解</text>
-          <text class="status-value">{{aiStatus.solve ? currentConfig.SOLVE_MODEL_NAME : '使用视觉模型作为备选'}}</text>
+          <text class="status-value">{{aiStatus.solve ? currentConfig.SOLVE_MODEL_NAME : '使用视觉模型兜底'}}</text>
         </view>
       </view>
       <button class="secondary-btn" bindtap="testConnection" loading="{{testing}}">测试连接</button>
     </view>
 
-    <!-- 视觉模型配置 -->
     <view class="card">
-      <text class="card-title">视觉模型配置 (OCR识别)</text>
+      <text class="card-title">视觉模型配置 (OCR)</text>
       <text class="hint">用于识别图片中的题目内容</text>
 
       <text class="field-label">API Base URL</text>
       <input class="input" placeholder="如：https://dashscope.aliyuncs.com/compatible-mode/v1" value="{{configForm.visionBaseUrl}}" data-key="visionBaseUrl" bindinput="onConfigInput" />
 
       <text class="field-label">API Key</text>
-      <input class="input" type="password" placeholder="输入API Key" value="{{configForm.visionKey}}" data-key="visionKey" bindinput="onConfigInput" />
+      <input class="input" type="password" placeholder="输入 API Key" value="{{configForm.visionKey}}" data-key="visionKey" bindinput="onConfigInput" />
 
       <text class="field-label">模型名称</text>
       <view class="model-selector">
@@ -67,7 +63,6 @@
       <text class="model-desc" wx:if="{{modelLists.visionSelectedDesc}}">{{modelLists.visionSelectedDesc}}</text>
     </view>
 
-    <!-- 文本模型配置 -->
     <view class="card">
       <text class="card-title">文本模型配置 (批改与解答)</text>
       <text class="hint">用于数学批改和题目解答</text>
@@ -76,7 +71,7 @@
       <input class="input" placeholder="如：https://api.openai.com/v1" value="{{configForm.textBaseUrl}}" data-key="textBaseUrl" bindinput="onConfigInput" />
 
       <text class="field-label">API Key</text>
-      <input class="input" type="password" placeholder="输入API Key" value="{{configForm.textKey}}" data-key="textKey" bindinput="onConfigInput" />
+      <input class="input" type="password" placeholder="输入 API Key" value="{{configForm.textKey}}" data-key="textKey" bindinput="onConfigInput" />
 
       <text class="field-label">模型名称</text>
       <view class="model-selector">
@@ -93,16 +88,15 @@
       <text class="model-desc" wx:if="{{modelLists.textSelectedDesc}}">{{modelLists.textSelectedDesc}}</text>
     </view>
 
-    <!-- 题目求解专用配置 -->
     <view class="card solve-card">
       <text class="card-title">题目求解专用配置 (可选)</text>
-      <text class="hint">为教师端题目求解设置更强的单步模型，如 Gemini 2.5 Pro、Claude 3.7 Sonnet 等。不配置时将使用视觉模型作为备选。</text>
+      <text class="hint">给教师端题目求解指定更强模型；不配置时会使用视觉模型兜底。</text>
 
       <text class="field-label">API Base URL</text>
       <input class="input" placeholder="如：https://generativelanguage.googleapis.com/v1beta/openai" value="{{configForm.solveBaseUrl}}" data-key="solveBaseUrl" bindinput="onConfigInput" />
 
       <text class="field-label">API Key</text>
-      <input class="input" type="password" placeholder="输入API Key" value="{{configForm.solveKey}}" data-key="solveKey" bindinput="onConfigInput" />
+      <input class="input" type="password" placeholder="输入 API Key" value="{{configForm.solveKey}}" data-key="solveKey" bindinput="onConfigInput" />
 
       <text class="field-label">模型名称</text>
       <view class="model-selector">
@@ -119,7 +113,6 @@
       <text class="model-desc" wx:if="{{modelLists.solveSelectedDesc}}">{{modelLists.solveSelectedDesc}}</text>
     </view>
 
-    <!-- 操作按钮 -->
     <view class="card action-card">
       <button class="primary-btn {{saving ? 'loading' : ''}}" bindtap="saveConfig" disabled="{{saving}}">
         {{saving ? '保存中...' : '保存并立即生效'}}
@@ -128,7 +121,6 @@
       <button class="danger-btn" bindtap="logout">退出登录</button>
     </view>
 
-    <!-- 保存结果提示 -->
     <view class="toast {{saveResult.show ? 'show' : ''}} {{saveResult.success ? 'success' : 'error'}}">
       <text>{{saveResult.message}}</text>
     </view>

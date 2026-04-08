@@ -1,23 +1,30 @@
-// app.js
 const STUDENT_PROFILE_KEY = 'student_profile'
+const STUDENT_SESSION_KEY = 'student_session'
 
 App({
   onLaunch() {
-    console.log('AI数学作业批改小程序启动')
-
     try {
       const cachedProfile = wx.getStorageSync(STUDENT_PROFILE_KEY)
       if (cachedProfile && cachedProfile.nickName) {
         this.globalData.studentProfile = cachedProfile
       }
     } catch (err) {
-      console.warn('读取本地登录态失败:', err)
+      console.warn('Failed to read the cached student profile', err)
+    }
+
+    try {
+      const cachedSession = wx.getStorageSync(STUDENT_SESSION_KEY)
+      if (cachedSession && cachedSession.sessionToken) {
+        this.globalData.studentSession = cachedSession
+      }
+    } catch (err) {
+      console.warn('Failed to read the cached student session', err)
     }
   },
 
   globalData: {
-    // 云托管生产环境
     apiBaseUrl: 'https://math-api-234234-9-1324601200.sh.run.tcloudbase.com',
     studentProfile: null,
+    studentSession: null,
   }
 })

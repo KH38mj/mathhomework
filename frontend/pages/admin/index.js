@@ -1,27 +1,26 @@
-// pages/admin/index.js
 const app = getApp()
+
 const API_BASE_URL = (app && app.globalData && app.globalData.apiBaseUrl) || 'http://127.0.0.1:18080'
+const ADMIN_TOKEN_KEY = 'admin_token'
 
 Page({
   data: {
-    // 登录状态
     isLoggedIn: false,
     password: '',
-
-    // 系统状态
     currentConfig: {
       AI_VISION_API_BASE_URL: '',
       AI_VISION_MODEL_NAME: '',
       AI_TEXT_API_BASE_URL: '',
       AI_TEXT_MODEL_NAME: '',
+      SOLVE_API_BASE_URL: '',
+      SOLVE_MODEL_NAME: '',
     },
     aiStatus: {
       vision: false,
       text: false,
+      solve: false,
     },
     testing: false,
-
-    // 表单配置
     configForm: {
       visionBaseUrl: '',
       visionKey: '',
@@ -33,8 +32,6 @@ Page({
       solveKey: '',
       solveModel: '',
     },
-
-    // 模型列表
     modelLists: {
       vision: [],
       visionSelectedIndex: -1,
@@ -51,8 +48,6 @@ Page({
       text: false,
       solve: false,
     },
-
-    // 保存状态
     saving: false,
     saveResult: {
       show: false,
@@ -62,21 +57,22 @@ Page({
   },
 
   onLoad() {
-    // 检查本地是否有登录态
-    const savedPassword = wx.getStorageSync('admin_password')
-    if (savedPassword) {
-      this.setData({ password: savedPassword })
-      this.login()
+    const adminToken = wx.getStorageSync(ADMIN_TOKEN_KEY)
+    if (adminToken) {
+      this.setData({ isLoggedIn: true })
+      this.loadConfig().catch(() => this.logout())
     }
   },
 
   onShow() {
     if (this.data.isLoggedIn) {
-      this.loadConfig()
+      this.loadConfig().catch(() => this.logout())
     }
   },
 
-  // ========== 登录相关 ==========
+  getAdminToken() {
+    return wx.getStorageSync(ADMIN_TOKEN_KEY)
+  },
 
   onPasswordInput(e) {
     this.setData({ password: e.detail.value })
@@ -95,17 +91,21 @@ Page({
       const res = await this.request({
         url: `${API_BASE_URL}/api/v1/admin/login`,
         method: 'POST',
-        data: { password }
+        data: { password },
       })
 
-      if (res.success) {
-        wx.setStorageSync('admin_password', password)
-        this.setData({ isLoggedIn: true })
-        this.loadConfig()
-        wx.showToast({ title: '登录成功', icon: 'success' })
-      } else {
-        wx.showToast({ title: '密码错误', icon: 'none' })
+      if (!res.success || !res.token) {
+        wx.showToast({ title: '登录失败', icon: 'none' })
+        return
       }
+
+      wx.setStorageSync(ADMIN_TOKEN_KEY, res.token)
+      this.setData({
+        isLoggedIn: true,
+        password: '',
+      })
+      await this.loadConfig()
+      wx.showToast({ title: '登录成功', icon: 'success' })
     } catch (err) {
       wx.showToast({ title: err.message || '登录失败', icon: 'none' })
     } finally {
@@ -114,48 +114,41 @@ Page({
   },
 
   logout() {
-    wx.removeStorageSync('admin_password')
+    wx.removeStorageSync(ADMIN_TOKEN_KEY)
     this.setData({
       isLoggedIn: false,
       password: '',
     })
   },
 
-  // ========== 配置管理 ==========
-
   async loadConfig() {
-    const password = wx.getStorageSync('admin_password')
-    if (!password) return
+    const adminToken = this.getAdminToken()
+    if (!adminToken) return
 
-    try {
-      const config = await this.request({
-        url: `${API_BASE_URL}/api/v1/admin/config`,
-        header: { 'X-Admin-Password': password }
-      })
+    const config = await this.request({
+      url: `${API_BASE_URL}/api/v1/admin/config`,
+      header: { 'X-Admin-Token': adminToken },
+    })
 
-      this.setData({
-        currentConfig: config,
-        aiStatus: {
-          vision: !!config.AI_VISION_MODEL_NAME,
-          text: !!config.AI_TEXT_MODEL_NAME,
-          solve: !!config.SOLVE_MODEL_NAME,
-        },
-        // 同步到表单（不填充敏感信息如Key）
-        configForm: {
-          visionBaseUrl: config.AI_VISION_API_BASE_URL || '',
-          visionKey: '', // 不回显Key
-          visionModel: config.AI_VISION_MODEL_NAME || '',
-          textBaseUrl: config.AI_TEXT_API_BASE_URL || '',
-          textKey: '', // 不回显Key
-          textModel: config.AI_TEXT_MODEL_NAME || '',
-          solveBaseUrl: config.SOLVE_API_BASE_URL || '',
-          solveKey: '', // 不回显Key
-          solveModel: config.SOLVE_MODEL_NAME || '',
-        }
-      })
-    } catch (err) {
-      wx.showToast({ title: '加载配置失败', icon: 'none' })
-    }
+    this.setData({
+      currentConfig: config,
+      aiStatus: {
+        vision: !!config.AI_VISION_MODEL_NAME,
+        text: !!config.AI_TEXT_MODEL_NAME,
+        solve: !!config.SOLVE_MODEL_NAME,
+      },
+      configForm: {
+        visionBaseUrl: config.AI_VISION_API_BASE_URL || '',
+        visionKey: '',
+        visionModel: config.AI_VISION_MODEL_NAME || '',
+        textBaseUrl: config.AI_TEXT_API_BASE_URL || '',
+        textKey: '',
+        textModel: config.AI_TEXT_MODEL_NAME || '',
+        solveBaseUrl: config.SOLVE_API_BASE_URL || '',
+        solveKey: '',
+        solveModel: config.SOLVE_MODEL_NAME || '',
+      },
+    })
   },
 
   onConfigInput(e) {
@@ -166,50 +159,31 @@ Page({
 
   resetForm() {
     this.loadConfig()
-    wx.showToast({ title: '已重置', icon: 'none' })
+      .then(() => wx.showToast({ title: '已重置', icon: 'none' }))
+      .catch(() => this.logout())
   },
 
   async saveConfig() {
-    const password = wx.getStorageSync('admin_password')
-    if (!password) {
+    const adminToken = this.getAdminToken()
+    if (!adminToken) {
       this.logout()
       return
     }
 
     const { configForm } = this.data
+    const updates = {}
 
-    // 收集有值的更新
-    const updates = { password }
+    if (configForm.visionBaseUrl.trim()) updates.AI_VISION_API_BASE_URL = configForm.visionBaseUrl.trim()
+    if (configForm.visionKey.trim()) updates.AI_VISION_API_KEY = configForm.visionKey.trim()
+    if (configForm.visionModel.trim()) updates.AI_VISION_MODEL_NAME = configForm.visionModel.trim()
+    if (configForm.textBaseUrl.trim()) updates.AI_TEXT_API_BASE_URL = configForm.textBaseUrl.trim()
+    if (configForm.textKey.trim()) updates.AI_TEXT_API_KEY = configForm.textKey.trim()
+    if (configForm.textModel.trim()) updates.AI_TEXT_MODEL_NAME = configForm.textModel.trim()
+    if (configForm.solveBaseUrl.trim()) updates.SOLVE_API_BASE_URL = configForm.solveBaseUrl.trim()
+    if (configForm.solveKey.trim()) updates.SOLVE_API_KEY = configForm.solveKey.trim()
+    if (configForm.solveModel.trim()) updates.SOLVE_MODEL_NAME = configForm.solveModel.trim()
 
-    if (configForm.visionBaseUrl.trim()) {
-      updates.AI_VISION_API_BASE_URL = configForm.visionBaseUrl.trim()
-    }
-    if (configForm.visionKey.trim()) {
-      updates.AI_VISION_API_KEY = configForm.visionKey.trim()
-    }
-    if (configForm.visionModel.trim()) {
-      updates.AI_VISION_MODEL_NAME = configForm.visionModel.trim()
-    }
-    if (configForm.textBaseUrl.trim()) {
-      updates.AI_TEXT_API_BASE_URL = configForm.textBaseUrl.trim()
-    }
-    if (configForm.textKey.trim()) {
-      updates.AI_TEXT_API_KEY = configForm.textKey.trim()
-    }
-    if (configForm.textModel.trim()) {
-      updates.AI_TEXT_MODEL_NAME = configForm.textModel.trim()
-    }
-    if (configForm.solveBaseUrl.trim()) {
-      updates.SOLVE_API_BASE_URL = configForm.solveBaseUrl.trim()
-    }
-    if (configForm.solveKey.trim()) {
-      updates.SOLVE_API_KEY = configForm.solveKey.trim()
-    }
-    if (configForm.solveModel.trim()) {
-      updates.SOLVE_MODEL_NAME = configForm.solveModel.trim()
-    }
-
-    if (Object.keys(updates).length <= 1) {
+    if (!Object.keys(updates).length) {
       wx.showToast({ title: '没有要更新的配置', icon: 'none' })
       return
     }
@@ -220,19 +194,18 @@ Page({
       const res = await this.request({
         url: `${API_BASE_URL}/api/v1/admin/config`,
         method: 'POST',
-        data: updates
+        data: updates,
+        header: { 'X-Admin-Token': adminToken },
       })
 
       if (res.success) {
         this.showSaveResult(true, '配置已更新并立即生效')
-        // 清空Key输入框（安全考虑）
         this.setData({
           'configForm.visionKey': '',
           'configForm.textKey': '',
           'configForm.solveKey': '',
         })
-        // 刷新配置显示
-        this.loadConfig()
+        await this.loadConfig()
       } else {
         this.showSaveResult(false, res.message || '更新失败')
       }
@@ -245,18 +218,19 @@ Page({
 
   showSaveResult(success, message) {
     this.setData({
-      saveResult: { show: true, success, message }
+      saveResult: { show: true, success, message },
     })
     setTimeout(() => {
       this.setData({ 'saveResult.show': false })
     }, 3000)
   },
 
-  // ========== 获取模型列表 ==========
-
   async fetchModelList(type) {
-    const password = wx.getStorageSync('admin_password')
-    if (!password) return
+    const adminToken = this.getAdminToken()
+    if (!adminToken) {
+      this.logout()
+      return
+    }
 
     const baseUrlKey = `${type}BaseUrl`
     const keyKey = `${type}Key`
@@ -276,33 +250,24 @@ Page({
         method: 'POST',
         data: {
           api_key: apiKey,
-          base_url: baseUrl
+          base_url: baseUrl,
         },
-        header: { 'X-Admin-Password': password }
+        header: { 'X-Admin-Token': adminToken },
       })
 
-      if (res.success && res.models) {
+      if (res.models && res.models.length > 0) {
         this.setData({
           [`modelLists.${type}`]: res.models,
           [`modelLists.${type}SelectedIndex`]: -1,
           [`modelLists.${type}SelectedDesc`]: '',
         })
-
-        wx.showToast({
-          title: `获取到 ${res.models.length} 个模型`,
-          icon: 'success'
-        })
-      } else {
-        // 即使失败也显示返回的模型列表（可能是硬编码的）
-        if (res.models && res.models.length > 0) {
-          this.setData({
-            [`modelLists.${type}`]: res.models,
-            [`modelLists.${type}SelectedIndex`]: -1,
-            [`modelLists.${type}SelectedDesc`]: '',
-          })
-        }
-        wx.showToast({ title: res.message || '获取失败', icon: 'none', duration: 3000 })
       }
+
+      wx.showToast({
+        title: res.success ? `获取到${res.models.length}个模型` : (res.message || '获取失败'),
+        icon: res.success ? 'success' : 'none',
+        duration: 3000,
+      })
     } catch (err) {
       wx.showToast({ title: err.message || '请求失败', icon: 'none' })
     } finally {
@@ -325,56 +290,54 @@ Page({
   onVisionModelSelect(e) {
     const index = e.detail.value
     const model = this.data.modelLists.vision[index]
-    if (model) {
-      this.setData({
-        'configForm.visionModel': model.id,
-        'modelLists.visionSelectedIndex': index,
-        'modelLists.visionSelectedDesc': model.description || '',
-      })
-    }
+    if (!model) return
+    this.setData({
+      'configForm.visionModel': model.id,
+      'modelLists.visionSelectedIndex': index,
+      'modelLists.visionSelectedDesc': model.description || '',
+    })
   },
 
   onTextModelSelect(e) {
     const index = e.detail.value
     const model = this.data.modelLists.text[index]
-    if (model) {
-      this.setData({
-        'configForm.textModel': model.id,
-        'modelLists.textSelectedIndex': index,
-        'modelLists.textSelectedDesc': model.description || '',
-      })
-    }
+    if (!model) return
+    this.setData({
+      'configForm.textModel': model.id,
+      'modelLists.textSelectedIndex': index,
+      'modelLists.textSelectedDesc': model.description || '',
+    })
   },
 
   onSolveModelSelect(e) {
     const index = e.detail.value
     const model = this.data.modelLists.solve[index]
-    if (model) {
-      this.setData({
-        'configForm.solveModel': model.id,
-        'modelLists.solveSelectedIndex': index,
-        'modelLists.solveSelectedDesc': model.description || '',
-      })
-    }
+    if (!model) return
+    this.setData({
+      'configForm.solveModel': model.id,
+      'modelLists.solveSelectedIndex': index,
+      'modelLists.solveSelectedDesc': model.description || '',
+    })
   },
 
-  // ========== 测试连接 ==========
-
   async testConnection() {
-    const password = wx.getStorageSync('admin_password')
-    if (!password) return
+    const adminToken = this.getAdminToken()
+    if (!adminToken) {
+      this.logout()
+      return
+    }
 
     this.setData({ testing: true })
 
     try {
       const res = await this.request({
         url: `${API_BASE_URL}/api/v1/admin/config/test`,
-        header: { 'X-Admin-Password': password }
+        header: { 'X-Admin-Token': adminToken },
       })
 
-      const visionOk = res.details && res.details.vision && res.details.vision.configured
-      const textOk = res.details && res.details.text && res.details.text.configured
-      const solveOk = res.details && res.details.solve && res.details.solve.configured
+      const visionOk = !!(res.details && res.details.vision && res.details.vision.configured)
+      const textOk = !!(res.details && res.details.text && res.details.text.configured)
+      const solveOk = !!(res.details && res.details.solve && res.details.solve.configured)
 
       this.setData({
         aiStatus: {
@@ -384,19 +347,16 @@ Page({
         }
       })
 
-      if (visionOk || textOk) {
-        wx.showToast({ title: '配置检查通过', icon: 'success' })
-      } else {
-        wx.showToast({ title: '配置不完整', icon: 'none' })
-      }
+      wx.showToast({
+        title: (visionOk || textOk) ? '配置检查通过' : '配置不完整',
+        icon: (visionOk || textOk) ? 'success' : 'none',
+      })
     } catch (err) {
-      wx.showToast({ title: '测试失败', icon: 'none' })
+      wx.showToast({ title: err.message || '测试失败', icon: 'none' })
     } finally {
       this.setData({ testing: false })
     }
   },
-
-  // ========== 网络请求封装 ==========
 
   request({ url, method = 'GET', data = null, header = {} }) {
     return new Promise((resolve, reject) => {

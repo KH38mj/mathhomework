@@ -56,6 +56,16 @@ async def run_e2e_test():
         resp.raise_for_status()
         print("✅ 标准答案设置成功!\n")
 
+        print("🧑‍🎓 [学生端] 2.5 正在创建学生会话...")
+        session_resp = await client.post(
+            f"{BASE_URL}/student/session",
+            json={"display_name": "本地测试学生-张三"},
+        )
+        session_resp.raise_for_status()
+        student_session = session_resp.json()
+        student_token = student_session["session_token"]
+        print("✅ 学生会话创建成功!\n")
+
         # ==========================================
         # 步骤 3: 模拟学生上传图片并触发异步批改
         # ==========================================
@@ -66,10 +76,11 @@ async def run_e2e_test():
             files = {
                 "file": (TEST_IMAGE_PATH, f, "image/jpeg")
             }
-            data = {
-                "student_name": "本地测试学生-张三"
-            }
-            resp = await client.post(f"{BASE_URL}/assignments/{assignment_id}/submit", data=data, files=files)
+            resp = await client.post(
+                f"{BASE_URL}/assignments/{assignment_id}/submit",
+                files=files,
+                headers={"X-Student-Token": student_token},
+            )
 
         if resp.status_code != 202:
             print(f"❌ 上传失败! 状态码: {resp.status_code}, {resp.text}")
@@ -92,7 +103,10 @@ async def run_e2e_test():
             attempts += 1
             print(f"   ⏳ 第 {attempts} 次查询状态...")
 
-            resp = await client.get(f"{BASE_URL}/assignments/{assignment_id}/submissions/{submission_id}")
+            resp = await client.get(
+                f"{BASE_URL}/assignments/{assignment_id}/submissions/{submission_id}",
+                headers={"X-Student-Token": student_token},
+            )
             resp.raise_for_status()
 
             current_data = resp.json()

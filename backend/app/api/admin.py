@@ -1,29 +1,27 @@
-"""管理员 API - 配置热重载管理。"""
+"""Admin APIs for login, config management, and model discovery."""
+
+from __future__ import annotations
 
 import httpx
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app.config import settings
-
-router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
+from app.storage import create_admin_session, is_admin_session_valid
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
 
 class AdminLoginRequest(BaseModel):
-    """管理员登录请求。"""
-    password: str = Field(..., min_length=1, description="管理员密码")
+    password: str = Field(..., min_length=1)
 
 
 class AdminLoginResponse(BaseModel):
-    """管理员登录响应。"""
     success: bool
-    token: str = Field(default="", description="简单令牌（预留扩展）")
+    token: str = ""
 
 
 class ConfigResponse(BaseModel):
-    """配置信息响应（隐藏敏感信息）。"""
     AI_VISION_API_BASE_URL: str
     AI_VISION_MODEL_NAME: str
     AI_TEXT_API_BASE_URL: str
@@ -34,296 +32,234 @@ class ConfigResponse(BaseModel):
 
 
 class ConfigUpdateRequest(BaseModel):
-    """配置更新请求。"""
-    password: str = Field(..., min_length=1, description="管理员密码")
-    AI_VISION_API_KEY: str | None = Field(default=None, description="视觉模型 API Key")
-    AI_VISION_API_BASE_URL: str | None = Field(default=None, description="视觉模型 Base URL")
-    AI_TEXT_API_KEY: str | None = Field(default=None, description="文本模型 API Key")
-    AI_TEXT_API_BASE_URL: str | None = Field(default=None, description="文本模型 Base URL")
-    AI_TEXT_MODEL_NAME: str | None = Field(default=None, description="文本模型名称")
-    SOLVE_API_KEY: str | None = Field(default=None, description="题目求解模型 API Key")
-    SOLVE_API_BASE_URL: str | None = Field(default=None, description="题目求解模型 Base URL")
-    SOLVE_MODEL_NAME: str | None = Field(default=None, description="题目求解模型名称")
+    AI_VISION_API_KEY: str | None = None
+    AI_VISION_API_BASE_URL: str | None = None
+    AI_VISION_MODEL_NAME: str | None = None
+    AI_TEXT_API_KEY: str | None = None
+    AI_TEXT_API_BASE_URL: str | None = None
+    AI_TEXT_MODEL_NAME: str | None = None
+    SOLVE_API_KEY: str | None = None
+    SOLVE_API_BASE_URL: str | None = None
+    SOLVE_MODEL_NAME: str | None = None
 
 
 class ConfigUpdateResponse(BaseModel):
-    """配置更新响应。"""
     success: bool
     message: str
     config: ConfigResponse
 
 
-def _verify_admin(password: str | None):
-    """验证管理员密码。"""
-    if not password:
-        raise HTTPException(status_code=401, detail="缺少管理员密码")
-    if not settings.verify_admin(password):
-        raise HTTPException(status_code=401, detail="密码错误")
-
-
-@router.post("/login", response_model=AdminLoginResponse)
-async def admin_login(req: AdminLoginRequest):
-    """管理员登录验证。"""
-    if settings.verify_admin(req.password):
-        return AdminLoginResponse(success=True, token="admin")
-    raise HTTPException(status_code=401, detail="密码错误")
-
-
-@router.get("/config", response_model=ConfigResponse)
-async def get_config(x_admin_password: str = Header(..., description="管理员密码")):
-    """获取当前配置（隐藏敏感信息如 API Key）。"""
-    _verify_admin(x_admin_password)
-    return ConfigResponse(**settings.get_public_config())
-
-
-@router.post("/config", response_model=ConfigUpdateResponse)
-async def update_config(req: ConfigUpdateRequest):
-    """热更新配置。
-
-    更新内存中的配置并写入 .env 文件，立即生效。
-    """
-    _verify_admin(req.password)
-
-    # 收集需要更新的字段
-    updates = {}
-    if req.AI_VISION_API_KEY is not None:
-        updates["AI_VISION_API_KEY"] = req.AI_VISION_API_KEY
-    if req.AI_VISION_API_BASE_URL is not None:
-        updates["AI_VISION_API_BASE_URL"] = req.AI_VISION_API_BASE_URL
-    if req.AI_TEXT_API_KEY is not None:
-        updates["AI_TEXT_API_KEY"] = req.AI_TEXT_API_KEY
-    if req.AI_TEXT_API_BASE_URL is not None:
-        updates["AI_TEXT_API_BASE_URL"] = req.AI_TEXT_API_BASE_URL
-    if req.AI_TEXT_MODEL_NAME is not None:
-        updates["AI_TEXT_MODEL_NAME"] = req.AI_TEXT_MODEL_NAME
-    if req.SOLVE_API_KEY is not None:
-        updates["SOLVE_API_KEY"] = req.SOLVE_API_KEY
-    if req.SOLVE_API_BASE_URL is not None:
-        updates["SOLVE_API_BASE_URL"] = req.SOLVE_API_BASE_URL
-    if req.SOLVE_MODEL_NAME is not None:
-        updates["SOLVE_MODEL_NAME"] = req.SOLVE_MODEL_NAME
-
-    if not updates:
-        raise HTTPException(status_code=400, detail="没有提供要更新的配置")
-
-    try:
-        # 热更新：更新内存 + 写入文件
-        settings.update_config(**updates)
-
-        return ConfigUpdateResponse(
-            success=True,
-            message="配置已更新并立即生效",
-            config=ConfigResponse(**settings.get_public_config())
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"配置更新失败: {exc}")
-
-
 class ModelListRequest(BaseModel):
-    """模型列表查询请求。"""
-    api_key: str = Field(..., description="API Key")
-    base_url: str = Field(..., description="Base URL")
+    api_key: str = Field(..., min_length=1)
+    base_url: str = Field(..., min_length=1)
 
 
 class ModelInfo(BaseModel):
-    """模型信息。"""
     id: str
     name: str
     description: str = ""
 
 
 class ModelListResponse(BaseModel):
-    """模型列表响应。"""
     success: bool
     models: list[ModelInfo]
-    provider: str = ""  # 服务商名称
+    provider: str = ""
     message: str = ""
 
 
-# 硬编码的常用模型列表（用于不支持列表 API 的服务商）
 COMMON_MODELS = {
     "qwen": [
-        ModelInfo(id="qwen-vl-max", name="通义千问 VL Max", description="阿里云最强视觉模型"),
-        ModelInfo(id="qwen-vl-plus", name="通义千问 VL Plus", description="阿里云视觉模型"),
-        ModelInfo(id="qwen-max", name="通义千问 Max", description="阿里云最强文本模型"),
-        ModelInfo(id="qwen-plus", name="通义千问 Plus", description="阿里云文本模型"),
-        ModelInfo(id="qwen-turbo", name="通义千问 Turbo", description="阿里云快速文本模型"),
+        ModelInfo(id="qwen-vl-max", name="Qwen VL Max", description="Alibaba Cloud flagship vision model"),
+        ModelInfo(id="qwen-vl-plus", name="Qwen VL Plus", description="Alibaba Cloud vision model"),
+        ModelInfo(id="qwen-max", name="Qwen Max", description="Alibaba Cloud flagship text model"),
+        ModelInfo(id="qwen-plus", name="Qwen Plus", description="Alibaba Cloud general text model"),
+        ModelInfo(id="qwen-turbo", name="Qwen Turbo", description="Alibaba Cloud fast text model"),
     ],
     "claude": [
-        ModelInfo(id="claude-3-7-sonnet-20250219", name="Claude 3.7 Sonnet", description="Anthropic 最新智能模型"),
-        ModelInfo(id="claude-3-5-sonnet-20241022", name="Claude 3.5 Sonnet", description="Anthropic 高性价比模型"),
-        ModelInfo(id="claude-3-5-haiku-20241022", name="Claude 3.5 Haiku", description="Anthropic 快速模型"),
-        ModelInfo(id="claude-3-opus-20240229", name="Claude 3 Opus", description="Anthropic 最强模型"),
+        ModelInfo(id="claude-3-7-sonnet-20250219", name="Claude 3.7 Sonnet", description="Anthropic reasoning model"),
+        ModelInfo(id="claude-3-5-sonnet-20241022", name="Claude 3.5 Sonnet", description="Anthropic balanced model"),
+        ModelInfo(id="claude-3-5-haiku-20241022", name="Claude 3.5 Haiku", description="Anthropic fast model"),
+        ModelInfo(id="claude-3-opus-20240229", name="Claude 3 Opus", description="Anthropic flagship model"),
     ],
     "gemini": [
-        ModelInfo(id="gemini-2.5-pro-exp-03-25", name="Gemini 2.5 Pro", description="Google 实验性最强模型"),
-        ModelInfo(id="gemini-2.0-flash", name="Gemini 2.0 Flash", description="Google 快速多模态模型"),
-        ModelInfo(id="gemini-2.0-flash-lite", name="Gemini 2.0 Flash Lite", description="Google 轻量快速模型"),
-        ModelInfo(id="gemini-1.5-pro", name="Gemini 1.5 Pro", description="Google 专业模型"),
-        ModelInfo(id="gemini-1.5-flash", name="Gemini 1.5 Flash", description="Google 快速模型"),
+        ModelInfo(id="gemini-2.5-pro-exp-03-25", name="Gemini 2.5 Pro", description="Google high-end model"),
+        ModelInfo(id="gemini-2.0-flash", name="Gemini 2.0 Flash", description="Google fast multimodal model"),
+        ModelInfo(id="gemini-2.0-flash-lite", name="Gemini 2.0 Flash Lite", description="Google lightweight model"),
+        ModelInfo(id="gemini-1.5-pro", name="Gemini 1.5 Pro", description="Google professional model"),
+        ModelInfo(id="gemini-1.5-flash", name="Gemini 1.5 Flash", description="Google fast model"),
     ],
     "openai": [
-        ModelInfo(id="gpt-4o", name="GPT-4o", description="OpenAI 最强多模态模型"),
-        ModelInfo(id="gpt-4o-mini", name="GPT-4o Mini", description="OpenAI 高性价比模型"),
-        ModelInfo(id="gpt-4-turbo", name="GPT-4 Turbo", description="OpenAI 文本模型"),
-        ModelInfo(id="gpt-3.5-turbo", name="GPT-3.5 Turbo", description="OpenAI 快速模型"),
+        ModelInfo(id="gpt-4o", name="GPT-4o", description="OpenAI multimodal model"),
+        ModelInfo(id="gpt-4o-mini", name="GPT-4o Mini", description="OpenAI cost-efficient model"),
+        ModelInfo(id="gpt-4-turbo", name="GPT-4 Turbo", description="OpenAI text model"),
+        ModelInfo(id="gpt-3.5-turbo", name="GPT-3.5 Turbo", description="OpenAI fast model"),
     ],
     "deepseek": [
-        ModelInfo(id="deepseek-chat", name="DeepSeek Chat", description="DeepSeek 对话模型"),
-        ModelInfo(id="deepseek-reasoner", name="DeepSeek Reasoner", description="DeepSeek 推理模型"),
+        ModelInfo(id="deepseek-chat", name="DeepSeek Chat", description="DeepSeek conversation model"),
+        ModelInfo(id="deepseek-reasoner", name="DeepSeek Reasoner", description="DeepSeek reasoning model"),
     ],
 }
 
 
-def _detect_provider(base_url: str) -> str:
-    """根据 base_url 检测服务商类型。"""
-    base_lower = base_url.lower()
+def _ensure_admin_password_configured() -> None:
+    if not settings.has_secure_admin_password():
+        raise HTTPException(
+            status_code=503,
+            detail="Admin access is disabled until ADMIN_PASSWORD is configured to a non-default value.",
+        )
 
+
+def _verify_admin_token(token: str | None) -> None:
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing admin token")
+    if not is_admin_session_valid(token):
+        raise HTTPException(status_code=401, detail="Admin session is invalid or expired")
+
+
+@router.post("/login", response_model=AdminLoginResponse)
+async def admin_login(req: AdminLoginRequest):
+    _ensure_admin_password_configured()
+    if not settings.verify_admin(req.password):
+        raise HTTPException(status_code=401, detail="Password is incorrect")
+    return AdminLoginResponse(success=True, token=create_admin_session())
+
+
+@router.get("/config", response_model=ConfigResponse)
+async def get_config(x_admin_token: str = Header(..., description="Admin session token")):
+    _verify_admin_token(x_admin_token)
+    return ConfigResponse(**settings.get_public_config())
+
+
+@router.post("/config", response_model=ConfigUpdateResponse)
+async def update_config(
+    req: ConfigUpdateRequest,
+    x_admin_token: str = Header(..., description="Admin session token"),
+):
+    _verify_admin_token(x_admin_token)
+
+    updates = {
+        key: value
+        for key, value in req.model_dump().items()
+        if value is not None
+    }
+    if not updates:
+        raise HTTPException(status_code=400, detail="No configuration fields were provided")
+
+    try:
+        settings.update_config(**updates)
+    except Exception as exc:  # pragma: no cover - defensive surface
+        raise HTTPException(status_code=500, detail=f"Failed to update config: {exc}") from exc
+
+    return ConfigUpdateResponse(
+        success=True,
+        message="Configuration updated successfully",
+        config=ConfigResponse(**settings.get_public_config()),
+    )
+
+
+def _detect_provider(base_url: str) -> str:
+    base_lower = base_url.lower()
     if "dashscope" in base_lower or "aliyun" in base_lower:
         return "qwen"
-    elif "anthropic" in base_lower:
+    if "anthropic" in base_lower:
         return "claude"
-    elif "google" in base_lower or "generativelanguage" in base_lower:
+    if "google" in base_lower or "generativelanguage" in base_lower:
         return "gemini"
-    elif "deepseek" in base_lower:
+    if "deepseek" in base_lower:
         return "deepseek"
-    elif "openai" in base_lower or "api.openai.com" in base_lower:
+    if "openai" in base_lower or "api.openai.com" in base_lower:
         return "openai"
-    else:
-        return "unknown"
+    return "unknown"
 
 
 async def _fetch_openai_compatible_models(api_key: str, base_url: str) -> list[ModelInfo]:
-    """获取 OpenAI 兼容格式的模型列表。"""
     url = f"{base_url.rstrip('/')}/models"
     headers = {"Authorization": f"Bearer {api_key}"}
 
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(url, headers=headers)
-        resp.raise_for_status()
-        data = resp.json()
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
 
-    models = []
+    models: list[ModelInfo] = []
     for item in data.get("data", []):
         model_id = item.get("id", "")
-        # 过滤出常用模型（排除 embeddings、tts 等非聊天模型）
-        if any(keyword in model_id.lower() for keyword in [
-            "gpt", "claude", "gemini", "qwen", "deepseek",
-            "turbo", "vision", "vl", "chat", "pro", "flash"
-        ]):
-            models.append(ModelInfo(
-                id=model_id,
-                name=model_id,
-                description=""
-            ))
-
+        if any(
+            keyword in model_id.lower()
+            for keyword in ["gpt", "claude", "gemini", "qwen", "deepseek", "turbo", "vision", "vl", "chat", "pro", "flash"]
+        ):
+            models.append(ModelInfo(id=model_id, name=model_id))
     return models
 
 
 @router.post("/models", response_model=ModelListResponse)
 async def get_model_list(
     req: ModelListRequest,
-    x_admin_password: str = Header(..., description="管理员密码")
+    x_admin_token: str = Header(..., description="Admin session token"),
 ):
-    """获取指定 API Key 可用的模型列表。
-
-    根据 Base URL 自动识别服务商类型：
-    - OpenAI 兼容格式：直接调用 /v1/models
-    - 通义千问/Claude/DeepSeek：返回硬编码常用模型列表
-    """
-    _verify_admin(x_admin_password)
-
-    if not req.api_key or not req.base_url:
-        return ModelListResponse(
-            success=False,
-            models=[],
-            message="API Key 和 Base URL 不能为空"
-        )
+    _verify_admin_token(x_admin_token)
 
     provider = _detect_provider(req.base_url)
-
-    # 对于已知但不支持列表 API 的服务商，返回硬编码列表
     if provider in COMMON_MODELS:
         return ModelListResponse(
             success=True,
             models=COMMON_MODELS[provider],
             provider=provider,
-            message=f"已加载 {provider} 常用模型列表"
+            message=f"Loaded the common {provider} model list",
         )
 
-    # 尝试 OpenAI 兼容格式获取
     try:
         models = await _fetch_openai_compatible_models(req.api_key, req.base_url)
-
         if models:
             return ModelListResponse(
                 success=True,
                 models=models,
                 provider="openai_compatible",
-                message=f"成功获取 {len(models)} 个模型"
+                message=f"Loaded {len(models)} models",
             )
-        else:
-            # 如果没有获取到模型，返回 OpenAI 常用模型作为备选
-            return ModelListResponse(
-                success=True,
-                models=COMMON_MODELS["openai"],
-                provider="unknown",
-                message="未获取到模型列表，显示 OpenAI 常用模型供参考"
-            )
-
-    except httpx.HTTPStatusError as exc:
-        # API 调用失败，可能是 Key 无效或服务商不支持
         return ModelListResponse(
-            success=False,
-            models=COMMON_MODELS.get("openai", []),
-            provider=provider,
-            message=f"获取模型列表失败 ({exc.response.status_code})，请检查 API Key 是否有效"
+            success=True,
+            models=COMMON_MODELS["openai"],
+            provider="unknown",
+            message="Fell back to the default OpenAI-compatible model list",
         )
-    except Exception as exc:
+    except httpx.HTTPStatusError as exc:
         return ModelListResponse(
             success=False,
-            models=COMMON_MODELS.get("openai", []),
+            models=COMMON_MODELS["openai"],
             provider=provider,
-            message=f"获取模型列表失败: {str(exc)[:100]}"
+            message=f"Model lookup failed ({exc.response.status_code}); check the API key and base URL",
+        )
+    except Exception as exc:  # pragma: no cover - defensive surface
+        return ModelListResponse(
+            success=False,
+            models=COMMON_MODELS["openai"],
+            provider=provider,
+            message=f"Model lookup failed: {str(exc)[:100]}",
         )
 
 
 @router.get("/config/test")
 async def test_ai_connection(
-    x_admin_password: str = Header(..., description="管理员密码")
+    x_admin_token: str = Header(..., description="Admin session token"),
 ):
-    """测试 AI 配置是否可用。"""
-    _verify_admin(x_admin_password)
-
-    results = {
-        "vision": {"configured": False, "message": ""},
-        "text": {"configured": False, "message": ""},
-        "solve": {"configured": False, "message": ""},
+    _verify_admin_token(x_admin_token)
+    details = {
+        "vision": {
+            "configured": bool(settings.AI_VISION_API_KEY and settings.AI_VISION_API_BASE_URL),
+            "message": settings.AI_VISION_MODEL_NAME or "Not configured",
+        },
+        "text": {
+            "configured": bool(settings.AI_TEXT_API_KEY and settings.AI_TEXT_API_BASE_URL),
+            "message": settings.AI_TEXT_MODEL_NAME or "Not configured",
+        },
+        "solve": {
+            "configured": bool(settings.SOLVE_API_KEY and settings.SOLVE_API_BASE_URL and settings.SOLVE_MODEL_NAME),
+            "message": settings.SOLVE_MODEL_NAME or "Using the vision model fallback",
+        },
     }
-
-    # 检查视觉模型配置
-    if settings.AI_VISION_API_KEY and settings.AI_VISION_API_BASE_URL:
-        results["vision"]["configured"] = True
-        results["vision"]["message"] = f"已配置模型: {settings.AI_VISION_MODEL_NAME}"
-    else:
-        results["vision"]["message"] = "API Key 或 Base URL 未配置"
-
-    # 检查文本模型配置
-    if settings.AI_TEXT_API_KEY and settings.AI_TEXT_API_BASE_URL:
-        results["text"]["configured"] = True
-        results["text"]["message"] = f"已配置模型: {settings.AI_TEXT_MODEL_NAME}"
-    else:
-        results["text"]["message"] = "API Key 或 Base URL 未配置"
-
-    # 检查题目求解模型配置
-    if settings.SOLVE_API_KEY and settings.SOLVE_API_BASE_URL:
-        results["solve"]["configured"] = True
-        results["solve"]["message"] = f"已配置模型: {settings.SOLVE_MODEL_NAME}"
-    else:
-        results["solve"]["message"] = "未配置（将使用视觉模型作为备选）"
-
     return {
-        "configured": results["vision"]["configured"] or results["text"]["configured"],
-        "details": results,
-        "note": "此检查仅验证配置是否填写，不验证 API Key 是否有效"
+        "configured": details["vision"]["configured"] or details["text"]["configured"],
+        "details": details,
+        "note": "This endpoint checks whether config values are present. It does not verify the remote credentials.",
     }

@@ -51,6 +51,16 @@ def _save_all(data: dict[str, dict]) -> None:
     )
 
 
+def get_course_student_count(course_id: str | None) -> int:
+    if not course_id:
+        return 0
+    data = _load_all()
+    course = data.get(course_id)
+    if not course:
+        return 0
+    return len(course.get("students", []))
+
+
 # ---- 服务类 ----
 
 class RosterService:

@@ -13,7 +13,9 @@ from app.config import MAX_IMAGE_SIZE_MB, settings
 from app.api.assignment import router as assignment_router
 from app.api.course import router as course_router
 from app.api.admin import router as admin_router
+from app.api.student import router as student_router
 from app.services.ai_service import call_vision_with_refinement, call_solve_questions, AIServiceError
+from app.storage import mark_processing_submissions_failed
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +23,7 @@ app = FastAPI(title="AI 数学作业批改服务", version="0.1.0")
 app.include_router(assignment_router)
 app.include_router(course_router)
 app.include_router(admin_router)
+app.include_router(student_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -33,6 +36,15 @@ app.add_middleware(
 @app.get("/health")
 async def health_check():
     return {"status": "ok"}
+
+
+@app.on_event("startup")
+async def recover_processing_submissions():
+    recovered = mark_processing_submissions_failed(
+        "The service restarted before grading finished. Please resubmit the assignment."
+    )
+    if recovered:
+        logger.warning("Marked %s stale processing submissions as failed on startup", recovered)
 
 
 @app.post("/api/v1/correct/upload", response_model=CorrectionResponse)

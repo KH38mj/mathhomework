@@ -1,62 +1,52 @@
-// pages/teacher/index.js
 const app = getApp()
+const {
+  formatApiDateTime,
+  formatDisplayDateTime,
+  parseApiDateTime,
+} = require('../../utils/util')
+
 const API_BASE_URL = (app && app.globalData && app.globalData.apiBaseUrl) || 'http://127.0.0.1:18080'
 
 Page({
   data: {
-    // Tab 状态
     activeTab: 'course',
-
-    // 作业管理子 Tab
-    assignmentSubTab: 'list', // 'list' | 'create'
+    assignmentSubTab: 'list',
     assignments: [],
     loadingAssignments: false,
-
-    // 课程管理
     loadingCourses: false,
     courses: [],
     selectedCourseIndex: -1,
     selectedCourseId: '',
     selectedCourseName: '',
     rosterStudents: [],
-
     courseIdInput: '',
     courseNameInput: '',
-
     studentIdInput: '',
     studentNameInput: '',
     classNameInput: '',
-
     importFilePath: '',
     importFileName: '',
-
-    // 创建作业
-    assignmentMode: null, // 'manual' | 'photo' | null
+    assignmentMode: null,
     assignmentTitle: '',
-
-    // 手动输入模式
     questionContent: '',
     maxScoreInput: '10',
     teacherAnswer: '',
     createdAssignment: null,
-
-    // 拍照上传模式
     solveImagePath: '',
     solveImagePreview: '',
     solveSpecifications: '',
     solveLoading: false,
-    extractedQuestion: null, // AI识别后可编辑的题目
-
-    // 时间配置
+    extractedQuestion: null,
     assignmentStartTime: '',
+    assignmentStartTimeValue: '',
     assignmentEndTime: '',
+    assignmentEndTimeValue: '',
     assignmentAppealTime: '',
+    assignmentAppealTimeValue: '',
     dateTimeArray: null,
     dateTimeStart: [0, 0, 0, 0, 0],
     dateTimeEnd: [0, 0, 0, 0, 0],
     dateTimeAppeal: [0, 0, 0, 0, 0],
-
-    // 规则配置
     allowResubmit: true,
     allowLate: true,
     lateRules: ['逾期按100%计分', '逾期按80%计分', '逾期按60%计分', '逾期按0%计分（拒收）'],
@@ -65,70 +55,69 @@ Page({
   },
 
   onLoad() {
+    this.initDateTimePicker()
     this.loadCourses()
     this.loadAssignments()
-    this.initDateTimePicker()
   },
 
   initDateTimePicker() {
-    // 初始化时间选择器数据
     const years = []
     const months = []
     const days = []
     const hours = []
     const minutes = []
-
-    // 生成年份（当前年前后5年）
     const currentYear = new Date().getFullYear()
-    for (let i = currentYear - 1; i <= currentYear + 5; i++) {
-      years.push(i + '年')
+
+    for (let year = currentYear - 1; year <= currentYear + 5; year += 1) {
+      years.push(`${year}`)
+    }
+    for (let month = 1; month <= 12; month += 1) {
+      months.push(`${month}`.padStart(2, '0'))
+    }
+    for (let day = 1; day <= 31; day += 1) {
+      days.push(`${day}`.padStart(2, '0'))
+    }
+    for (let hour = 0; hour < 24; hour += 1) {
+      hours.push(`${hour}`.padStart(2, '0'))
+    }
+    for (let minute = 0; minute < 60; minute += 5) {
+      minutes.push(`${minute}`.padStart(2, '0'))
     }
 
-    // 生成月份
-    for (let i = 1; i <= 12; i++) {
-      months.push(i + '月')
-    }
-
-    // 生成日期（1-31，实际选择时会根据月份调整）
-    for (let i = 1; i <= 31; i++) {
-      days.push(i + '日')
-    }
-
-    // 生成小时
-    for (let i = 0; i < 24; i++) {
-      hours.push(i + '时')
-    }
-
-    // 生成分钟（间隔5分钟）
-    for (let i = 0; i < 60; i += 5) {
-      minutes.push(i + '分')
-    }
-
-    const dateTimeArray = [years, months, days, hours, minutes]
-
-    // 设置默认值为当前时间
     const now = new Date()
-    const defaultIndex = [
-      years.indexOf(currentYear + '年'), // 今年
-      now.getMonth(), // 当前月
-      now.getDate() - 1, // 当前日
-      now.getHours(), // 当前小时
-      Math.floor(now.getMinutes() / 5) // 当前分钟（取5分钟间隔）
+    const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000)
+    const defaultValue = [
+      years.indexOf(`${currentYear}`),
+      now.getMonth(),
+      now.getDate() - 1,
+      now.getHours(),
+      Math.floor(now.getMinutes() / 5),
+    ]
+    const endValue = [
+      years.indexOf(`${tomorrow.getFullYear()}`),
+      tomorrow.getMonth(),
+      tomorrow.getDate() - 1,
+      tomorrow.getHours(),
+      Math.floor(tomorrow.getMinutes() / 5),
     ]
 
     this.setData({
-      dateTimeArray,
-      dateTimeStart: defaultIndex,
-      dateTimeEnd: defaultIndex,
-      dateTimeAppeal: defaultIndex
+      dateTimeArray: [years, months, days, hours, minutes],
+      dateTimeStart: defaultValue,
+      dateTimeEnd: endValue,
+      dateTimeAppeal: defaultValue,
+      assignmentStartTime: formatDisplayDateTime(now),
+      assignmentStartTimeValue: formatApiDateTime(now),
+      assignmentEndTime: formatDisplayDateTime(tomorrow),
+      assignmentEndTimeValue: formatApiDateTime(tomorrow),
+      assignmentAppealTime: '',
+      assignmentAppealTimeValue: '',
     })
   },
 
   onPullDownRefresh() {
-    this.loadCourses().finally(() => wx.stopPullDownRefresh())
+    Promise.all([this.loadCourses(), this.loadAssignments()]).finally(() => wx.stopPullDownRefresh())
   },
-
-  // ========== Tab 切换 ==========
 
   switchTab(e) {
     const tab = e.currentTarget.dataset.tab
@@ -137,8 +126,6 @@ Page({
       this.loadAssignments()
     }
   },
-
-  // ========== 作业管理子 Tab ==========
 
   switchAssignmentSubTab(e) {
     const subtab = e.currentTarget.dataset.subtab
@@ -156,10 +143,9 @@ Page({
       })
 
       const now = new Date()
-      const processedAssignments = (assignments || []).map(item => {
-        const endTime = item.submit_end_time ? new Date(item.submit_end_time.replace(/年|月|日|时|分/g, '-').replace(/-$/, '')) : null
-        const startTime = item.submit_start_time ? new Date(item.submit_start_time.replace(/年|月|日|时|分/g, '-').replace(/-$/, '')) : null
-
+      const processedAssignments = (assignments || []).map((item) => {
+        const endTime = parseApiDateTime(item.submit_end_time)
+        const startTime = parseApiDateTime(item.submit_start_time)
         let statusClass = 'draft'
         let statusText = '草稿'
         let isNearDeadline = false
@@ -174,17 +160,16 @@ Page({
           } else {
             statusClass = 'active'
             statusText = '进行中'
-            // 24小时内截止显示即将截止
             if (endTime && (endTime - now) < 24 * 60 * 60 * 1000) {
-              isNearDeadline = true
               statusClass = 'near-deadline'
               statusText = '即将截止'
+              isNearDeadline = true
             }
           }
         }
 
         const submitted = item.submitted_count || 0
-        const total = item.total_students || 30  // 默认假设30人班级
+        const total = item.total_students || 0
         const progressPercent = total > 0 ? Math.round((submitted / total) * 100) : 0
 
         return {
@@ -193,13 +178,17 @@ Page({
           statusText,
           isNearDeadline,
           progressPercent: Math.min(progressPercent, 100),
-          progress: `${submitted}/${total}`  // 覆盖后端返回的progress
+          progress: `${submitted}/${total}`,
+          submit_start_time_raw: item.submit_start_time,
+          submit_end_time_raw: item.submit_end_time,
+          appeal_end_time_raw: item.appeal_end_time,
+          submit_start_time: formatDisplayDateTime(item.submit_start_time),
+          submit_end_time: formatDisplayDateTime(item.submit_end_time),
+          appeal_end_time: formatDisplayDateTime(item.appeal_end_time),
         }
       })
 
-      this.setData({
-        assignments: processedAssignments
-      })
+      this.setData({ assignments: processedAssignments })
     } catch (err) {
       wx.showToast({ title: err.message || '加载作业列表失败', icon: 'none' })
     } finally {
@@ -211,8 +200,8 @@ Page({
     const id = e.currentTarget.dataset.id
     wx.showModal({
       title: '作业详情',
-      content: `作业ID: ${id}\n\n功能开发中...`,
-      showCancel: false
+      content: `作业ID: ${id}\n\n更多详情页还没接上，先别嫌它简陋。`,
+      showCancel: false,
     })
   },
 
@@ -222,11 +211,10 @@ Page({
 
     wx.showModal({
       title: '延长截止时间',
-      content: `当前截止时间: ${currentEndTime}\n\n请在下方选择新的截止时间`,
-      confirmText: '选择时间',
+      content: `当前截止时间：${currentEndTime}\n\n选择一个延长方案吧。`,
+      confirmText: '继续',
       success: (res) => {
         if (res.confirm) {
-          // 显示时间选择器
           this.showDateTimePickerForExtend(id)
         }
       }
@@ -234,19 +222,12 @@ Page({
   },
 
   showDateTimePickerForExtend(assignmentId) {
-    // 保存当前正在延长的作业ID
-    this.setData({ extendingAssignmentId: assignmentId })
-
-    // 使用微信的日期时间选择
     wx.showActionSheet({
-      itemList: ['延长1天', '延长3天', '延长7天', '自定义时间'],
+      itemList: ['延长1天', '延长3天', '延长7天'],
       success: (res) => {
         const days = [1, 3, 7][res.tapIndex]
         if (days) {
           this.extendDeadline(assignmentId, days)
-        } else {
-          // 自定义时间 - 这里简化处理，使用默认延长7天
-          this.extendDeadline(assignmentId, 7)
         }
       }
     })
@@ -256,35 +237,19 @@ Page({
     wx.showLoading({ title: '更新中...', mask: true })
 
     try {
-      // 获取当前作业详情
-      const assignment = this.data.assignments.find(a => a.id === assignmentId)
+      const assignment = this.data.assignments.find((item) => item.id === assignmentId)
       if (!assignment) {
         throw new Error('作业不存在')
       }
 
-      // 计算新的截止时间
-      const currentEndTime = assignment.submit_end_time
-        ? new Date(assignment.submit_end_time.replace(/年|月|日|时|分/g, '-').replace(/-$/, ''))
-        : new Date()
+      const currentEndTime = parseApiDateTime(assignment.submit_end_time_raw) || new Date()
       const newEndTime = new Date(currentEndTime.getTime() + days * 24 * 60 * 60 * 1000)
 
-      // 格式化为后端需要的格式
-      const formatDateTime = (date) => {
-        const y = date.getFullYear()
-        const m = String(date.getMonth() + 1).padStart(2, '0')
-        const d = String(date.getDate()).padStart(2, '0')
-        const h = String(date.getHours()).padStart(2, '0')
-        const min = String(date.getMinutes()).padStart(2, '0')
-        return `${y}-${m}-${d}T${h}:${min}:00`
-      }
-
-      // 调用更新接口 - 使用现有的创建接口修改（暂时用PATCH方式）
-      // 注意：后端需要添加 PATCH /assignments/{id} 接口
       await this.requestJson({
         url: `${API_BASE_URL}/api/v1/assignments/${assignmentId}/extend`,
         method: 'POST',
         data: {
-          submit_end_time: formatDateTime(newEndTime)
+          submit_end_time: formatApiDateTime(newEndTime),
         }
       })
 
@@ -298,20 +263,14 @@ Page({
   },
 
   goToAdmin() {
-    wx.navigateTo({
-      url: '/pages/admin/index'
-    })
+    wx.navigateTo({ url: '/pages/admin/index' })
   },
-
-  // ========== 通用输入处理 ==========
 
   onFieldInput(e) {
     const key = e.currentTarget.dataset.key
     if (!key) return
     this.setData({ [key]: e.detail.value })
   },
-
-  // ========== 课程管理 ==========
 
   async loadCourses() {
     this.setData({ loadingCourses: true })
@@ -337,7 +296,7 @@ Page({
 
       const oldId = this.data.selectedCourseId
       if (oldId) {
-        const idx = list.findIndex(c => c.course_id === oldId)
+        const idx = list.findIndex((course) => course.course_id === oldId)
         selectedCourseIndex = idx >= 0 ? idx : 0
       } else {
         selectedCourseIndex = 0
@@ -359,12 +318,12 @@ Page({
   },
 
   onCoursePickerChange(e) {
-    const selectedCourseIndex = Number(e.detail.value)
-    const selected = this.data.courses[selectedCourseIndex]
+    const index = Number(e.detail.value)
+    const selected = this.data.courses[index]
     if (!selected) return
 
     this.setData({
-      selectedCourseIndex,
+      selectedCourseIndex: index,
       selectedCourseId: selected.course_id,
       selectedCourseName: selected.course_name,
       rosterStudents: selected.students || [],
@@ -374,7 +333,6 @@ Page({
   async createCourse() {
     const courseId = (this.data.courseIdInput || '').trim()
     const courseName = (this.data.courseNameInput || '').trim()
-
     if (!courseId || !courseName) {
       wx.showToast({ title: '请填写课程编号和课程名称', icon: 'none' })
       return
@@ -388,7 +346,7 @@ Page({
         data: {
           course_id: courseId,
           course_name: courseName,
-        },
+        }
       })
 
       this.setData({
@@ -397,16 +355,6 @@ Page({
       })
 
       await this.loadCourses()
-      const idx = this.data.courses.findIndex(c => c.course_id === courseId)
-      if (idx >= 0) {
-        const selected = this.data.courses[idx]
-        this.setData({
-          selectedCourseIndex: idx,
-          selectedCourseId: selected.course_id,
-          selectedCourseName: selected.course_name,
-          rosterStudents: selected.students || [],
-        })
-      }
       wx.showToast({ title: '课程创建成功', icon: 'success' })
     } catch (err) {
       wx.showToast({ title: err.message || '创建课程失败', icon: 'none' })
@@ -440,7 +388,7 @@ Page({
           student_id: studentId,
           name,
           class_name: className,
-        },
+        }
       })
 
       this.setData({
@@ -462,7 +410,6 @@ Page({
   async removeStudent(e) {
     const studentId = e.currentTarget.dataset.sid
     const courseId = this.data.selectedCourseId
-
     if (!studentId || !courseId) return
 
     wx.showLoading({ title: '移除中...', mask: true })
@@ -524,13 +471,11 @@ Page({
       name: 'file',
       success: async (res) => {
         wx.hideLoading()
-
         if (res.statusCode < 200 || res.statusCode >= 300) {
           let message = `导入失败 (${res.statusCode})`
           try {
             const data = JSON.parse(res.data)
-            const detail = data && data.detail
-            message = typeof detail === 'string' ? detail : message
+            message = typeof data.detail === 'string' ? data.detail : message
           } catch (err) {}
           wx.showToast({ title: message, icon: 'none' })
           return
@@ -556,8 +501,6 @@ Page({
     })
   },
 
-  // ========== 创建作业 - 模式选择 ==========
-
   selectAssignmentMode(e) {
     const mode = e.currentTarget.dataset.mode
     this.setData({
@@ -567,6 +510,7 @@ Page({
   },
 
   resetAssignmentMode() {
+    this.initDateTimePicker()
     this.setData({
       assignmentMode: null,
       assignmentTitle: '',
@@ -578,15 +522,7 @@ Page({
       solveSpecifications: '',
       extractedQuestion: null,
       createdAssignment: null,
-      // 重置时间配置
-      assignmentStartTime: '',
-      assignmentEndTime: '',
-      assignmentAppealTime: '',
-      dateTimeStart: [0, 0, 0, 0, 0],
-      dateTimeEnd: [0, 0, 0, 0, 0],
-      dateTimeAppeal: [0, 0, 0, 0, 0],
     })
-    this.initDateTimePicker()
   },
 
   createAnotherAssignment() {
@@ -604,46 +540,50 @@ Page({
     })
   },
 
-  // ========== 时间选择器 ==========
-
   onStartTimeChange(e) {
     const value = e.detail.value
-    const dateStr = this._formatDateTime(value)
-    this.setData({
-      dateTimeStart: value,
-      assignmentStartTime: dateStr
-    })
+      const date = this.buildDateFromPicker(value)
+      this.setData({
+        dateTimeStart: value,
+        assignmentStartTime: formatDisplayDateTime(date),
+        assignmentStartTimeValue: formatApiDateTime(date),
+      })
   },
 
   onEndTimeChange(e) {
     const value = e.detail.value
-    const dateStr = this._formatDateTime(value)
-    this.setData({
-      dateTimeEnd: value,
-      assignmentEndTime: dateStr
-    })
+      const date = this.buildDateFromPicker(value)
+      this.setData({
+        dateTimeEnd: value,
+        assignmentEndTime: formatDisplayDateTime(date),
+        assignmentEndTimeValue: formatApiDateTime(date),
+      })
   },
 
   onAppealTimeChange(e) {
     const value = e.detail.value
-    const dateStr = this._formatDateTime(value)
-    this.setData({
-      dateTimeAppeal: value,
-      assignmentAppealTime: dateStr
-    })
+      const date = this.buildDateFromPicker(value)
+      this.setData({
+        dateTimeAppeal: value,
+        assignmentAppealTime: formatDisplayDateTime(date),
+        assignmentAppealTimeValue: formatApiDateTime(date),
+      })
   },
 
-  _formatDateTime(arr) {
-    if (!this.data.dateTimeArray) return ''
-    const y = this.data.dateTimeArray[0][arr[0]]
-    const m = this.data.dateTimeArray[1][arr[1]]
-    const d = this.data.dateTimeArray[2][arr[2]]
-    const h = this.data.dateTimeArray[3][arr[3]]
-    const min = this.data.dateTimeArray[4][arr[4]]
-    return `${y}-${m}-${d} ${h}:${min}`
-  },
+  onStartTimeColumnChange() {},
+  onEndTimeColumnChange() {},
+  onAppealTimeColumnChange() {},
 
-  // ========== 规则配置 ==========
+  buildDateFromPicker(arr) {
+    if (!this.data.dateTimeArray) return new Date()
+    const [years, months, days, hours, minutes] = this.data.dateTimeArray
+    const year = Number(years[arr[0]])
+    const month = Number(months[arr[1]]) - 1
+    const day = Number(days[arr[2]])
+    const hour = Number(hours[arr[3]])
+    const minute = Number(minutes[arr[4]])
+    return new Date(year, month, day, hour, minute, 0)
+  },
 
   onAllowResubmitChange(e) {
     this.setData({ allowResubmit: e.detail.value })
@@ -657,8 +597,6 @@ Page({
     this.setData({ lateRuleIndex: e.detail.value })
   },
 
-  // ========== 创建作业 - 手动输入模式 ==========
-
   async createAssignmentManual() {
     const title = (this.data.assignmentTitle || '').trim()
     const questionContent = (this.data.questionContent || '').trim()
@@ -669,14 +607,12 @@ Page({
       wx.showToast({ title: '请完整填写作业信息', icon: 'none' })
       return
     }
-
     if (!Number.isFinite(maxScore) || maxScore <= 0) {
-      wx.showToast({ title: '满分必须是大于 0 的数字', icon: 'none' })
+      wx.showToast({ title: '满分必须是大于0的数字', icon: 'none' })
       return
     }
 
     wx.showLoading({ title: '创建中...', mask: true })
-
     try {
       const assignment = await this.requestJson({
         url: `${API_BASE_URL}/api/v1/assignments`,
@@ -690,12 +626,13 @@ Page({
               max_score: maxScore,
             }
           ],
-          submit_start_time: this.data.assignmentStartTime,
-          submit_end_time: this.data.assignmentEndTime,
-          appeal_end_time: this.data.assignmentAppealTime,
+          submit_start_time: this.data.assignmentStartTimeValue,
+          submit_end_time: this.data.assignmentEndTimeValue,
+          appeal_end_time: this.data.assignmentAppealTimeValue || null,
           allow_resubmit: this.data.allowResubmit,
           allow_late: this.data.allowLate,
           late_score_rule: this.data.lateRuleValues[this.data.lateRuleIndex],
+          course_id: this.data.selectedCourseId || null,
         }
       })
 
@@ -729,8 +666,6 @@ Page({
     }
   },
 
-  // ========== 创建作业 - 拍照上传模式 ==========
-
   chooseSolveImage() {
     wx.chooseMedia({
       count: 1,
@@ -756,15 +691,13 @@ Page({
     this.setData({ solveSpecifications: e.detail.value })
   },
 
-  // 识别题目并提取
-  async solveAndExtractQuestion() {
+  solveAndExtractQuestion() {
     const { solveImagePath, solveSpecifications } = this.data
 
     if (!solveImagePath) {
       wx.showToast({ title: '请先选择题目图片', icon: 'none' })
       return
     }
-
     if (!solveSpecifications.trim()) {
       wx.showToast({ title: '请输入题目指定', icon: 'none' })
       return
@@ -777,7 +710,7 @@ Page({
       filePath: solveImagePath,
       name: 'file',
       formData: {
-        specifications: solveSpecifications.trim()
+        specifications: solveSpecifications.trim(),
       },
       success: (res) => {
         if (res.statusCode < 200 || res.statusCode >= 300) {
@@ -795,32 +728,28 @@ Page({
         try {
           const result = JSON.parse(res.data)
           const questions = result.specified_questions || []
-
           if (!questions.length || !questions[0].found) {
-            wx.showToast({ title: '未找到指定题目，请检查指定格式', icon: 'none' })
+            wx.showToast({ title: '没找到指定题目，请检查格式', icon: 'none' })
             this.setData({ solveLoading: false })
             return
           }
 
-          const q = questions[0]
-          // 预处理可编辑数据
-          const extractedQuestion = {
-            specification: q.specification,
-            content: q.content || '',
-            full_solution: q.full_solution || '',
-            question_type: q.question_type || '',
-            difficulty: q.difficulty || '',
-            knowledge_points: q.knowledge_points || [],
-            knowledge_points_str: (q.knowledge_points || []).join('、'),
-            max_score: 10,
-          }
-
+          const question = questions[0]
           this.setData({
-            extractedQuestion,
+            extractedQuestion: {
+              specification: question.specification,
+              content: question.content || '',
+              full_solution: question.full_solution || '',
+              question_type: question.question_type || '',
+              difficulty: question.difficulty || '',
+              knowledge_points: question.knowledge_points || [],
+              knowledge_points_str: (question.knowledge_points || []).join('、'),
+              max_score: 10,
+            },
             solveLoading: false,
           })
 
-          wx.showToast({ title: '识别成功，请核对修改', icon: 'success' })
+          wx.showToast({ title: '识别成功，请核对后创建', icon: 'success' })
         } catch (err) {
           wx.showToast({ title: '解析结果失败', icon: 'none' })
           this.setData({ solveLoading: false })
@@ -833,27 +762,30 @@ Page({
     })
   },
 
-  // 编辑识别结果的字段
   onExtractedFieldInput(e) {
     const key = e.currentTarget.dataset.key
     if (!key || !this.data.extractedQuestion) return
 
-    const value = e.detail.value
+    const mapping = {
+      extractedContent: 'content',
+      extractedAnswer: 'full_solution',
+      extractedMaxScore: 'max_score',
+    }
+
+    const targetKey = mapping[key] || key
     this.setData({
-      [`extractedQuestion.${key === 'extractedContent' ? 'content' : key === 'extractedAnswer' ? 'full_solution' : key === 'extractedMaxScore' ? 'max_score' : key}`]: value
+      [`extractedQuestion.${targetKey}`]: e.detail.value,
     })
   },
 
-  // 从拍照结果创建作业
   async createAssignmentFromPhoto() {
-    const { assignmentTitle, extractedQuestion } = this.data
-    const title = (assignmentTitle || '').trim()
+    const title = (this.data.assignmentTitle || '').trim()
+    const extractedQuestion = this.data.extractedQuestion
 
     if (!title) {
       wx.showToast({ title: '请填写作业标题', icon: 'none' })
       return
     }
-
     if (!extractedQuestion || !extractedQuestion.content) {
       wx.showToast({ title: '题目内容不能为空', icon: 'none' })
       return
@@ -866,7 +798,6 @@ Page({
     }
 
     wx.showLoading({ title: '创建中...', mask: true })
-
     try {
       const assignment = await this.requestJson({
         url: `${API_BASE_URL}/api/v1/assignments`,
@@ -880,12 +811,13 @@ Page({
               max_score: maxScore,
             }
           ],
-          submit_start_time: this.data.assignmentStartTime,
-          submit_end_time: this.data.assignmentEndTime,
-          appeal_end_time: this.data.assignmentAppealTime,
+          submit_start_time: this.data.assignmentStartTimeValue,
+          submit_end_time: this.data.assignmentEndTimeValue,
+          appeal_end_time: this.data.assignmentAppealTimeValue || null,
           allow_resubmit: this.data.allowResubmit,
           allow_late: this.data.allowLate,
           late_score_rule: this.data.lateRuleValues[this.data.lateRuleIndex],
+          course_id: this.data.selectedCourseId || null,
         }
       })
 
@@ -928,8 +860,6 @@ Page({
       success: () => wx.showToast({ title: '作业ID已复制', icon: 'success' }),
     })
   },
-
-  // ========== 通用请求方法 ==========
 
   requestJson({ url, method = 'GET', data = null, header = {} }) {
     return new Promise((resolve, reject) => {

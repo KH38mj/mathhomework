@@ -1,34 +1,43 @@
+from __future__ import annotations
+
 import base64
 import logging
+import traceback
 import uuid
-import asyncio
+from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, UploadFile, File, Form
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Header, HTTPException, UploadFile
 
-from app.config import MAX_IMAGE_SIZE_MB, AI_VISION_API_KEY, AI_TEXT_API_KEY
+from app.config import settings
 from app.models.schemas import AssignmentStatus
 from app.schemas import (
     AnswerMode,
     AssignmentResponse,
     CorrectedQuestion,
     CreateAssignmentRequest,
+    ExtendAssignmentDeadlineRequest,
     QuestionType,
     StandardAnswer,
     SubmissionResponse,
     TeacherSubmitAnswersRequest,
 )
-from app.services.ai_service import call_vision, call_vision_with_refinement, call_text, AIServiceError
+from app.services.ai_service import AIServiceError, call_text, call_vision, call_vision_with_refinement
 from app.services.prompts import (
-    GENERATE_ANSWER_SYSTEM,
     GENERATE_ANSWER_PROMPT_IMAGE,
     GENERATE_ANSWER_PROMPT_TEXT,
+    GENERATE_ANSWER_SYSTEM,
 )
+from app.services.roster_service import get_course_student_count
 from app.services.storage_service import StorageService, get_storage_service
 from app.storage import (
     Assignment,
     Submission,
+    StudentSession,
     get_assignment,
+    get_latest_submission_for_student,
+    get_student_session,
     get_submission,
+    is_admin_session_valid,
     list_assignments,
     list_submissions_by_assignment,
     save_assignment,
@@ -37,21 +46,23 @@ from app.storage import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/assignments", tags=["作业管理"])
+router = APIRouter(prefix="/api/v1/assignments", tags=["assignments"])
 
 
 @router.post("", response_model=AssignmentResponse, status_code=201)
 async def create_assignment(req: CreateAssignmentRequest):
-    """教师创建作业项目，提交题目（图片或文字）。"""
-    # 校验图片类型题目的 Base64 合法性和大小
-    for i, q in enumerate(req.questions):
-        if q.type == QuestionType.image:
-            try:
-                raw = base64.b64decode(q.content)
-            except Exception:
-                raise HTTPException(status_code=400, detail=f"第 {i + 1} 题的图片 Base64 编码无效")
-            if len(raw) > MAX_IMAGE_SIZE_MB * 1024 * 1024:
-                raise HTTPException(status_code=400, detail=f"第 {i + 1} 题的图片超过 {MAX_IMAGE_SIZE_MB}MB")
+    for index, question in enumerate(req.questions, start=1):
+        if question.type != QuestionType.image:
+            continue
+        try:
+            raw = base64.b64decode(question.content)
+        except Exception as exc:  # pragma: no cover - defensive surface
+            raise HTTPException(status_code=400, detail=f"Question {index} has invalid Base64 image content") from exc
+        if len(raw) > settings.MAX_IMAGE_SIZE_MB * 1024 * 1024:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Question {index} exceeds the {settings.MAX_IMAGE_SIZE_MB}MB image size limit",
+            )
 
     assignment = Assignment(
         id=uuid.uuid4().hex[:12],
@@ -67,82 +78,74 @@ async def create_assignment(req: CreateAssignmentRequest):
         publish_status="published" if req.submit_start_time else "draft",
     )
     save_assignment(assignment)
-
     return _to_response(assignment)
 
 
 @router.get("", response_model=list[AssignmentResponse])
 async def get_assignments():
-    """获取所有作业项目列表。"""
-    return [_to_response(a) for a in list_assignments()]
+    return [_to_response(item) for item in list_assignments()]
 
 
 @router.get("/{assignment_id}", response_model=AssignmentResponse)
 async def get_assignment_detail(assignment_id: str):
-    """获取单个作业项目详情。"""
-    assignment = _get_or_404(assignment_id)
-    return _to_response(assignment)
+    return _to_response(_get_or_404(assignment_id))
 
 
 @router.post("/{assignment_id}/answers/ai-generate", response_model=AssignmentResponse)
 async def ai_generate_answers(assignment_id: str):
-    """选择 AI 自动生成标准答案。"""
     assignment = _get_or_404(assignment_id)
-
     if assignment.standard_answers:
-        raise HTTPException(status_code=409, detail="该作业已存在标准答案，请勿重复生成")
-
-    if not AI_VISION_API_KEY:
-        raise HTTPException(status_code=503, detail="AI 服务未配置，请先设置 AI_VISION_API_KEY")
+        raise HTTPException(status_code=409, detail="This assignment already has standard answers")
+    if not settings.AI_VISION_API_KEY:
+        raise HTTPException(status_code=503, detail="The vision model is not configured")
 
     answers: list[StandardAnswer] = []
-    for i, q in enumerate(assignment.questions):
+    for index, question in enumerate(assignment.questions):
         try:
-            if q.type == QuestionType.image:
+            if question.type == QuestionType.image:
                 result = await call_vision(
-                    image_base64=q.content,
+                    image_base64=question.content,
                     prompt=GENERATE_ANSWER_PROMPT_IMAGE,
                     system_prompt=GENERATE_ANSWER_SYSTEM,
                 )
             else:
                 result = await call_text(
-                    prompt=GENERATE_ANSWER_PROMPT_TEXT.format(content=q.content),
+                    prompt=GENERATE_ANSWER_PROMPT_TEXT.format(content=question.content),
                     system_prompt=GENERATE_ANSWER_SYSTEM,
                 )
             answer_text = result.get("answer", "")
             key_result = result.get("key_result", "")
-            full_answer = f"{answer_text}\n\n**最终结果：** {key_result}" if key_result else answer_text
+            full_answer = f"{answer_text}\n\n**Final Result:** {key_result}" if key_result else answer_text
         except AIServiceError as exc:
-            logger.warning("第 %d 题 AI 生成失败: %s", i + 1, exc)
-            full_answer = f"[AI 生成失败] {exc}"
+            logger.warning("Question %s answer generation failed: %s", index + 1, exc)
+            full_answer = f"[AI generation failed] {exc}"
 
-        answers.append(StandardAnswer(
-            question_index=i,
-            answer=full_answer,
-            source=AnswerMode.ai_generate,
-        ))
+        answers.append(
+            StandardAnswer(
+                question_index=index,
+                answer=full_answer,
+                source=AnswerMode.ai_generate,
+            )
+        )
 
     assignment.answer_mode = AnswerMode.ai_generate
     assignment.standard_answers = answers
     save_assignment(assignment)
-
     return _to_response(assignment)
 
 
 @router.post("/{assignment_id}/answers/teacher-submit", response_model=AssignmentResponse)
 async def teacher_submit_answers(assignment_id: str, req: TeacherSubmitAnswersRequest):
-    """教师手动提交标准答案。"""
     assignment = _get_or_404(assignment_id)
-
     if assignment.standard_answers:
-        raise HTTPException(status_code=409, detail="该作业已存在标准答案，如需修改请先清除")
+        raise HTTPException(status_code=409, detail="This assignment already has standard answers")
 
     question_count = len(assignment.questions)
-    for item in req.answers:
-        if item.question_index >= question_count:
+    for answer in req.answers:
+        if answer.question_index >= question_count:
             raise HTTPException(
                 status_code=400,
-                detail=f"题目序号 {item.question_index} 超出范围（共 {question_count} 题，序号从 0 开始）",
+                detail=f"Question index {answer.question_index} is out of range for {question_count} questions",
             )
 
     assignment.answer_mode = AnswerMode.teacher_submit
@@ -155,92 +158,113 @@ async def teacher_submit_answers(assignment_id: str, req: TeacherSubmitAnswersRe
         for item in req.answers
     ]
     save_assignment(assignment)
-
     return _to_response(assignment)
 
 
 @router.post("/{assignment_id}/extend", response_model=AssignmentResponse)
 async def extend_assignment_deadline(
     assignment_id: str,
-    submit_end_time: str = Form(..., description="新的截止时间，ISO 格式如 2026-03-10T23:59:00"),
+    req: ExtendAssignmentDeadlineRequest,
 ):
-    """延长作业截止时间。"""
     assignment = _get_or_404(assignment_id)
-    assignment.submit_end_time = submit_end_time
+    assignment.submit_end_time = req.submit_end_time
     save_assignment(assignment)
     return _to_response(assignment)
 
-
-# ---- 学生提交与批改 ----
 
 @router.post("/{assignment_id}/submit", response_model=SubmissionResponse, status_code=202)
 async def student_submit_upload(
     assignment_id: str,
     background_tasks: BackgroundTasks,
-    student_name: str = Form(..., description="学生姓名"),
     file: UploadFile = File(...),
-    storage: StorageService = Depends(get_storage_service)
+    x_student_token: str = Header(..., description="Student session token"),
+    storage: StorageService = Depends(get_storage_service),
 ):
-    """学生提交作业图片（表单上传），触发异步 AI 批改。返回 task_id (submission_id) 供轮询。"""
     assignment = _get_or_404(assignment_id)
+    student_session = _require_student_session(x_student_token)
 
     if not assignment.standard_answers:
-        raise HTTPException(status_code=409, detail="该作业尚未设置标准答案，无法批改")
-
-    if not AI_VISION_API_KEY:
-        raise HTTPException(status_code=503, detail="AI 服务未配置，请先设置 AI_VISION_API_KEY")
-
+        raise HTTPException(status_code=409, detail="This assignment cannot be graded until standard answers are set")
+    if not settings.AI_VISION_API_KEY:
+        raise HTTPException(status_code=503, detail="The vision model is not configured")
     if file.content_type not in ("image/jpeg", "image/png", "image/webp"):
-        raise HTTPException(status_code=400, detail="仅支持 JPEG / PNG / WebP 格式的图片")
+        raise HTTPException(status_code=400, detail="Only JPEG, PNG, and WebP images are supported")
 
-    # 1. 保存图片到 OSS
-    image_url = await storage.upload_image(file)
+    contents = await file.read()
+    if len(contents) > settings.MAX_IMAGE_SIZE_MB * 1024 * 1024:
+        raise HTTPException(status_code=400, detail=f"Image size cannot exceed {settings.MAX_IMAGE_SIZE_MB}MB")
+    await file.seek(0)
 
-    # 2. 创建 Submission (状态为 processing)
+    previous = get_latest_submission_for_student(assignment_id, student_session.student_id)
+    is_late = _validate_submission_window(assignment, previous)
     submission = Submission(
         id=uuid.uuid4().hex[:12],
         assignment_id=assignment_id,
-        student_name=student_name,
-        image_url=image_url,
+        student_id=student_session.student_id,
+        student_name=student_session.display_name,
         status=AssignmentStatus.processing,
-        max_total_score=sum(q.max_score for q in assignment.questions),
+        max_total_score=sum(question.max_score for question in assignment.questions),
+        resubmit_count=(previous.resubmit_count + 1) if previous else 0,
+        is_late=is_late,
     )
+    submission.image_url = await storage.upload_image(file)
     save_submission(submission)
 
-    # 3. 触发异步批改任务
     background_tasks.add_task(
         _process_correction_task,
         submission_id=submission.id,
         assignment=assignment,
-        image_url=image_url,
-        mime_type=file.content_type,
+        image_url=submission.image_url,
+        mime_type=file.content_type or "image/png",
         storage=storage,
     )
+    return _to_submission_response(submission)
 
+
+@router.get("/{assignment_id}/submissions/me", response_model=SubmissionResponse)
+async def get_my_submission(
+    assignment_id: str,
+    x_student_token: str = Header(..., description="Student session token"),
+):
+    _get_or_404(assignment_id)
+    student_session = _require_student_session(x_student_token)
+    submission = get_latest_submission_for_student(assignment_id, student_session.student_id)
+    if not submission:
+        raise HTTPException(status_code=404, detail="No submission exists for the current student")
     return _to_submission_response(submission)
 
 
 @router.get("/{assignment_id}/submissions/{submission_id}", response_model=SubmissionResponse)
-async def get_submission_status(assignment_id: str, submission_id: str):
-    """前端轮询此接口获取批改状态。"""
+async def get_submission_status(
+    assignment_id: str,
+    submission_id: str,
+    x_student_token: str | None = Header(default=None, description="Student session token"),
+    x_admin_token: str | None = Header(default=None, description="Admin session token"),
+):
     _get_or_404(assignment_id)
     submission = get_submission(submission_id)
     if not submission or submission.assignment_id != assignment_id:
-        raise HTTPException(status_code=404, detail="提交记录不存在")
+        raise HTTPException(status_code=404, detail="Submission not found")
+
+    if x_admin_token and is_admin_session_valid(x_admin_token):
+        return _to_submission_response(submission)
+
+    student_session = _require_student_session(x_student_token)
+    if submission.student_id != student_session.student_id:
+        raise HTTPException(status_code=403, detail="You are not allowed to access this submission")
     return _to_submission_response(submission)
 
 
 @router.get("/{assignment_id}/submissions", response_model=list[SubmissionResponse])
-async def get_submissions(assignment_id: str):
-    """查看某作业下所有学生提交的批改结果。"""
+async def get_submissions(
+    assignment_id: str,
+    x_admin_token: str = Header(..., description="Admin session token"),
+):
     _get_or_404(assignment_id)
-    submissions = list_submissions_by_assignment(assignment_id)
-    return [_to_submission_response(s) for s in submissions]
+    if not is_admin_session_valid(x_admin_token):
+        raise HTTPException(status_code=401, detail="Admin session is invalid or expired")
+    return [_to_submission_response(item) for item in list_submissions_by_assignment(assignment_id)]
 
-
-import traceback
-
-# ---- helpers ----
 
 async def _process_correction_task(
     submission_id: str,
@@ -249,127 +273,153 @@ async def _process_correction_task(
     mime_type: str,
     storage: StorageService,
 ):
-    """后台任务：调用大模型批改作业并更新状态。"""
     submission = get_submission(submission_id)
     if not submission:
-        logger.error(f"批改任务启动失败：未找到 submission_id {submission_id}")
+        logger.error("Could not start grading task for missing submission %s", submission_id)
         return
 
-    logger.info(f"开始批改任务 {submission_id}，学生：{submission.student_name}")
     try:
-        # 获取图片的 Base64 用于喂给模型
         image_base64 = await storage.get_image_base64(image_url)
-
         answers_text = _build_answers_text(assignment)
-
         result = await call_vision_with_refinement(
             image_base64=image_base64,
             standard_answers=answers_text,
             mime_type=mime_type,
         )
-
         corrected = _parse_correction(result, assignment)
 
         submission.corrected_questions = corrected
-        submission.total_score = sum(q.score for q in corrected)
+        submission.total_score = sum(question.score for question in corrected)
         submission.status = AssignmentStatus.completed
-        logger.info(f"批改任务 {submission_id} 成功完成，得分: {submission.total_score}")
-
+        submission.submit_status = "graded"
     except AIServiceError as exc:
-        logger.error(f"批改任务 {submission_id} AI调用失败: {exc}")
+        logger.error("Grading task %s failed in AI service: %s", submission_id, exc)
         submission.status = AssignmentStatus.failed
-        submission.error_message = f"AI 服务异常: {exc}"
-    except Exception as exc:
-        logger.error(f"批改任务 {submission_id} 发生未知异常:\n{traceback.format_exc()}")
+        submission.error_message = f"AI service error: {exc}"
+    except Exception as exc:  # pragma: no cover - defensive surface
+        logger.error("Grading task %s crashed:\n%s", submission_id, traceback.format_exc())
         submission.status = AssignmentStatus.failed
-        submission.error_message = f"系统内部错误: {exc}"
+        submission.error_message = f"Internal server error: {exc}"
     finally:
         save_submission(submission)
 
 
-def _to_submission_response(s: Submission) -> SubmissionResponse:
+def _require_student_session(session_token: str | None) -> StudentSession:
+    if not session_token:
+        raise HTTPException(status_code=401, detail="Missing student session token")
+    session = get_student_session(session_token)
+    if not session:
+        raise HTTPException(status_code=401, detail="Student session is invalid or expired")
+    return session
+
+
+def _to_submission_response(submission: Submission) -> SubmissionResponse:
     return SubmissionResponse(
-        submission_id=s.id,
-        assignment_id=s.assignment_id,
-        student_name=s.student_name,
-        image_url=s.image_url,
-        status=s.status,
-        questions=s.corrected_questions,
-        total_score=s.total_score,
-        max_total_score=s.max_total_score,
-        error_message=s.error_message,
-        created_at=s.created_at,
+        submission_id=submission.id,
+        assignment_id=submission.assignment_id,
+        student_name=submission.student_name,
+        image_url=submission.image_url,
+        status=submission.status,
+        questions=submission.corrected_questions,
+        total_score=submission.total_score,
+        max_total_score=submission.max_total_score,
+        error_message=submission.error_message,
+        created_at=submission.created_at,
     )
+
 
 def _get_or_404(assignment_id: str) -> Assignment:
     assignment = get_assignment(assignment_id)
     if not assignment:
-        raise HTTPException(status_code=404, detail="作业项目不存在")
+        raise HTTPException(status_code=404, detail="Assignment not found")
     return assignment
 
 
-def _to_response(a: Assignment) -> AssignmentResponse:
-    # 计算提交进度
-    submissions = list_submissions_by_assignment(a.id)
-    submitted_count = len(submissions)
-    # TODO: 从课程服务获取班级总人数，目前默认30人
-    total_students = 30
+def _to_response(assignment: Assignment) -> AssignmentResponse:
+    submissions = list_submissions_by_assignment(assignment.id)
+    submitted_count = len({item.student_id for item in submissions})
+    total_students = get_course_student_count(assignment.course_id)
+    progress = f"{submitted_count}/{total_students}" if total_students else f"{submitted_count}/0"
 
     return AssignmentResponse(
-        id=a.id,
-        title=a.title,
-        question_count=len(a.questions),
-        total_score=sum(q.max_score for q in a.questions),
-        questions=a.questions,
-        answer_mode=a.answer_mode,
-        standard_answers=a.standard_answers,
-        created_at=a.created_at,
-        submit_start_time=a.submit_start_time,
-        submit_end_time=a.submit_end_time,
-        appeal_end_time=a.appeal_end_time,
-        allow_resubmit=a.allow_resubmit,
-        allow_late=a.allow_late,
-        late_score_rule=a.late_score_rule,
-        publish_status=a.publish_status,
+        id=assignment.id,
+        title=assignment.title,
+        question_count=len(assignment.questions),
+        total_score=sum(question.max_score for question in assignment.questions),
+        questions=assignment.questions,
+        answer_mode=assignment.answer_mode,
+        standard_answers=[],
+        created_at=assignment.created_at,
+        submit_start_time=assignment.submit_start_time,
+        submit_end_time=assignment.submit_end_time,
+        appeal_end_time=assignment.appeal_end_time,
+        allow_resubmit=assignment.allow_resubmit,
+        allow_late=assignment.allow_late,
+        late_score_rule=assignment.late_score_rule,
+        publish_status=assignment.publish_status,
         submitted_count=submitted_count,
         total_students=total_students,
-        progress=f"{submitted_count}/{total_students}",
+        progress=progress,
     )
 
 
 def _build_answers_text(assignment: Assignment) -> str:
-    """将标准答案和分值拼成文本，嵌入批改 prompt。"""
+    answer_map = {item.question_index: item.answer for item in assignment.standard_answers}
     lines: list[str] = []
-    answer_map = {sa.question_index: sa.answer for sa in assignment.standard_answers}
-    for i, q in enumerate(assignment.questions):
-        ans = answer_map.get(i, "（无标准答案）")
-        lines.append(f"第 {i + 1} 题（满分 {q.max_score} 分）：\n{ans}")
+    for index, question in enumerate(assignment.questions):
+        answer = answer_map.get(index, "(No standard answer)")
+        lines.append(f"Question {index + 1} (max {question.max_score}):\n{answer}")
     return "\n\n".join(lines)
 
 
 def _parse_correction(result: dict, assignment: Assignment) -> list[CorrectedQuestion]:
-    """将 AI 返回的 JSON 解析为 CorrectedQuestion 列表，并校正分值边界。"""
-    raw_questions = result.get("questions", [])
+    max_scores = {index + 1: question.max_score for index, question in enumerate(assignment.questions)}
     corrected: list[CorrectedQuestion] = []
 
-    # 建立题号 -> 满分的映射（题号从 1 开始）
-    max_scores = {i + 1: q.max_score for i, q in enumerate(assignment.questions)}
-
-    for item in raw_questions:
-        q_num = item.get("q_num", 0)
+    for index, item in enumerate(result.get("questions", []), start=1):
+        q_num = int(item.get("q_num", index) or index)
         max_score = max_scores.get(q_num, 10.0)
-        raw_score = float(item.get("score", 0))
-        # 钳制分数在 [0, max_score] 范围内
+        try:
+            raw_score = float(item.get("score", 0) or 0)
+        except (TypeError, ValueError):
+            raw_score = 0.0
         score = max(0.0, min(raw_score, max_score))
 
-        corrected.append(CorrectedQuestion(
-            q_num=q_num,
-            content=item.get("content", ""),
-            student_ans=item.get("student_ans", ""),
-            is_correct=item.get("is_correct", False),
-            max_score=max_score,
-            score=score,
-            analysis=item.get("analysis", ""),
-        ))
+        corrected.append(
+            CorrectedQuestion(
+                q_num=q_num,
+                content=item.get("content", ""),
+                student_ans=item.get("student_ans", ""),
+                is_correct=bool(item.get("is_correct", False)),
+                max_score=max_score,
+                score=score,
+                analysis=item.get("analysis", ""),
+            )
+        )
 
     return corrected
+
+
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _validate_submission_window(assignment: Assignment, previous: Submission | None) -> bool:
+    now = datetime.now()
+    start_time = _parse_iso_datetime(assignment.submit_start_time)
+    end_time = _parse_iso_datetime(assignment.submit_end_time)
+
+    if assignment.publish_status != "published":
+        raise HTTPException(status_code=409, detail="This assignment has not been published yet")
+    if start_time and now < start_time:
+        raise HTTPException(status_code=409, detail="This assignment is not open for submission yet")
+    if previous and not assignment.allow_resubmit:
+        raise HTTPException(status_code=409, detail="This assignment does not allow resubmission")
+    if end_time and now > end_time and not assignment.allow_late:
+        raise HTTPException(status_code=409, detail="This assignment is already past the submission deadline")
+    return bool(end_time and now > end_time)
